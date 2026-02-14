@@ -114,6 +114,34 @@ Respond ONLY with valid JSON, no markdown, no preamble:
 
 Emit items in EXACTLY this order: titan, ghost, geography, culture, peer, essential, legacy, collaborator.`;
 
+// Separate lightweight call for the More tab — fires after mix completes, uses Haiku
+const CONNECTIONS_PROMPT = `You provide structured metadata about a cultural subject. Given a subject, return factual connection data.
+
+RULES:
+- Only include fields you have confident knowledge about. Use null for unknown fields. Use empty arrays [] if none apply.
+- subjectType: Accurately classify as artist | band | album | song | film | tv_show | book | other
+- keyPeople: List 3-8 of the most important collaborators (producers, bandmates, engineers, directors, etc.). Do NOT include the subject themselves.
+- coversPerformed: Only include documented, released covers. Max 5.
+- coveredBy: Only include notable covers. Max 5.
+- signatureGear: For music — instruments, amps, pedals, synths, production techniques. For film — cameras, lenses, editing techniques. For other domains — key tools of the craft. Max 5.
+
+Respond ONLY with valid JSON, no markdown, no preamble:
+{
+  "subjectType": "artist | band | album | song | film | tv_show | book | other",
+  "connections": {
+    "origin": "Where the artist is from / where the work was created (city, country)",
+    "recordedAt": "Studio or recording location (if applicable, null otherwise)",
+    "genre": ["Primary genre", "Secondary genre"],
+    "activePeriod": "e.g. 1967-1970 or 1992-present",
+    "keyPeople": [
+      { "name": "Person name", "role": "producer / guitarist / director / etc." }
+    ],
+    "coversPerformed": ["Songs this artist/work notably covers"],
+    "coveredBy": ["Notable artists who have covered this artist/work's songs"],
+    "signatureGear": ["Key instruments, tools, or techniques associated with this subject"]
+  }
+}`;
+
 const SLOT_ALTS_PROMPT = `You generate alternative entries for a specific KyndaMix slot. Given a subject and a slot type, produce 2-4 additional entries that fit the same role.
 
 SLOT DEFINITIONS:
@@ -148,7 +176,7 @@ Respond ONLY with valid JSON, no markdown, no preamble:
 async function fetchSlotAlternatives(subjectName, slotType, excludeNames, subjectContext) {
   let userMessage = `Generate 2-4 more "${slotType}" entries for: "${subjectName}"\n\nExclude these (already shown): ${excludeNames.join(", ")}`;
   if (subjectContext?.domain) userMessage += `\nDomain: ${subjectContext.domain}`;
-  const data = await callHaiku(SLOT_ALTS_PROMPT, userMessage);
+  const data = await callHaiku(SLOT_ALTS_PROMPT, userMessage, "slot_alternatives");
   return (data.items || []).map((item) => ({ ...item, slotType }));
 }
 
@@ -208,9 +236,43 @@ function cacheSet(prefix, query, data) {
   }
 }
 
+// ─── PERFORMANCE TRACKING ─────────────────────────────────────
+
+const perfLog = [];
+const MAX_PERF_LOG = 100;
+
+function perfTrack(label, duration, meta = {}) {
+  const entry = { label, duration, ts: Date.now(), ...meta };
+  perfLog.push(entry);
+  if (perfLog.length > MAX_PERF_LOG) perfLog.shift();
+  const color = duration > 10000 ? "color:#ef4444" : duration > 5000 ? "color:#f59e0b" : "color:#22c55e";
+  console.log(`%c⏱ ${label}: ${duration}ms ${meta.cached ? "[CACHED]" : `(${meta.model || ""})`}`, color);
+  return entry;
+}
+
+function getPerfSummary() {
+  if (perfLog.length === 0) return null;
+  const byLabel = {};
+  perfLog.forEach((e) => {
+    if (!byLabel[e.label]) byLabel[e.label] = [];
+    byLabel[e.label].push(e.duration);
+  });
+  const summary = {};
+  Object.entries(byLabel).forEach(([label, durations]) => {
+    summary[label] = {
+      count: durations.length,
+      avg: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length),
+      min: Math.min(...durations),
+      max: Math.max(...durations),
+    };
+  });
+  return summary;
+}
+
+// Expose to console for debugging: type kyndaPerf.summary() in devtools
+if (typeof window !== "undefined") window.kyndaPerf = { log: perfLog, summary: getPerfSummary };
+
 // ─── TIERED AI SERVICE ────────────────────────────────────────
-// Sonnet: mix generation, graph, connection context (quality matters)
-// Haiku: disambiguation, slot alternatives (speed + cost)
 
 const SONNET = "claude-sonnet-4-20250514";
 const HAIKU = "claude-haiku-4-5-20251001";
@@ -221,18 +283,33 @@ const API_ENDPOINT = IS_ARTIFACT
   ? "https://api.anthropic.com/v1/messages"
   : "/api/claude";
 
-async function callModel(model, systemPrompt, userMessage) {
+// Per-call-type token limits — smaller = faster response
+const TOKEN_LIMITS = {
+  disambiguate: 1000,
+  disambiguate_resolve: 1000,
+  mix: 4000,
+  connections: 1500,
+  graph: 3000,
+  slot_alternatives: 2500,
+  connection_context: 300,
+  api_call: 4000,
+};
+
+async function callModel(model, systemPrompt, userMessage, label = "api_call") {
+  const t0 = Date.now();
   const response = await fetch(API_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model,
-      max_tokens: 4000,
+      max_tokens: TOKEN_LIMITS[label] || 4000,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     }),
   });
   const data = await response.json();
+  const duration = Date.now() - t0;
+  perfTrack(label, duration, { model, tokens: data.usage });
   const text = data.content
     ?.map((block) => (block.type === "text" ? block.text : ""))
     .filter(Boolean)
@@ -242,19 +319,19 @@ async function callModel(model, systemPrompt, userMessage) {
 }
 
 // Convenience wrappers
-const callSonnet = (sys, msg) => callModel(SONNET, sys, msg);
-const callHaiku = (sys, msg) => callModel(HAIKU, sys, msg);
+const callSonnet = (sys, msg, label) => callModel(SONNET, sys, msg, label);
+const callHaiku = (sys, msg, label) => callModel(HAIKU, sys, msg, label);
 
 // ─── CACHED + TIERED FETCH FUNCTIONS ──────────────────────────
 
 function fetchKynda(query, callbacks) {
-  const { onSubject, onAlternatives, onIntro, onSlot, onError, onComplete, checkCancelled } = callbacks;
+  const { onSubject, onAlternatives, onIntro, onSlot, onConnections, onError, onComplete, checkCancelled } = callbacks;
 
-  // Check disambiguation cache first
+  // Check disambiguation cache
   const cachedDisamb = cacheGet("disamb", query);
   const disambPromise = cachedDisamb
-    ? Promise.resolve(cachedDisamb)
-    : callHaiku(DISAMBIGUATE_SYSTEM_PROMPT, `Identify: "${query}"`)
+    ? (perfTrack("disambiguate", 0, { cached: true }), Promise.resolve(cachedDisamb))
+    : callHaiku(DISAMBIGUATE_SYSTEM_PROMPT, `Identify: "${query}"`, "disambiguate")
         .then((data) => { cacheSet("disamb", query, data); return data; });
 
   disambPromise
@@ -275,7 +352,17 @@ function fetchKynda(query, callbacks) {
         onAlternatives({ confidence, primary: subject, alternatives: data.alternatives });
       }
 
+      // Fire mix and connections in parallel
       fireMix(subject.name, callbacks, subject);
+      if (onConnections) {
+        fetchConnections(subject.name, subject)
+          .then((connData) => {
+            if (!checkCancelled() && connData) {
+              onConnections(connData.connections, connData.subjectType);
+            }
+          })
+          .catch(() => {});
+      }
     })
     .catch((err) => {
       if (!checkCancelled()) onError(err.message || "Failed to identify subject");
@@ -297,15 +384,31 @@ function fireMix(resolvedName, callbacks, subjectContext) {
     }
   }
 
-  // Check mix cache
+  // Cached path — instant, use batch emit with cascade
   const cachedMix = cacheGet("mix", resolvedName);
-  const mixPromise = cachedMix
-    ? Promise.resolve(cachedMix)
-    : callSonnet(MIX_SYSTEM_PROMPT, userMessage)
-        .then((data) => { cacheSet("mix", resolvedName, data); return data; });
+  if (cachedMix) {
+    perfTrack("mix", 0, { cached: true });
+    (async () => {
+      if (checkCancelled()) return;
+      if (cachedMix.intro) onIntro(cachedMix.intro);
+      if (cachedMix.items) {
+        for (let i = 0; i < cachedMix.items.length; i++) {
+          if (checkCancelled()) return;
+          await new Promise((r) => setTimeout(r, i === 0 ? 60 : 150));
+          onSlot(cachedMix.items[i], i);
+        }
+      }
+      if (!checkCancelled()) onComplete();
+    })();
+    return;
+  }
 
-  mixPromise
-    .then(async (data) => {
+  // Fresh call — try streaming first, fall back to batch if streaming fails
+  const t0 = Date.now();
+
+  async function batchFallback() {
+    try {
+      const data = await callSonnet(MIX_SYSTEM_PROMPT, userMessage, "mix");
       if (checkCancelled()) return;
       if (data.intro) onIntro(data.intro);
       if (data.items && Array.isArray(data.items)) {
@@ -315,13 +418,159 @@ function fireMix(resolvedName, callbacks, subjectContext) {
           onSlot(data.items[i], i);
         }
       }
-    })
-    .catch((err) => {
-      if (!checkCancelled()) onError(err.message || "Failed to generate KyndaMix");
-    })
-    .finally(() => {
+      cacheSet("mix", resolvedName, data);
       if (!checkCancelled()) onComplete();
+    } catch (err) {
+      if (!checkCancelled()) onError(err.message || "Failed to generate KyndaMix");
+    }
+  }
+
+  streamMix(MIX_SYSTEM_PROMPT, userMessage, {
+    onIntro: (text) => { if (!checkCancelled()) onIntro(text); },
+    onSlot: (item, index) => { if (!checkCancelled()) onSlot(item, index); },
+    onComplete: (fullData) => {
+      const duration = Date.now() - t0;
+      perfTrack("mix", duration, { model: SONNET, streamed: true });
+      if (fullData) cacheSet("mix", resolvedName, fullData);
+      if (!checkCancelled()) onComplete();
+    },
+    onError: (msg) => {
+      // Streaming failed — fall back to batch
+      console.warn("⚠ Streaming failed, falling back to batch:", msg);
+      perfTrack("stream_fallback", Date.now() - t0, { reason: msg });
+      batchFallback();
+    },
+  });
+}
+
+// ─── STREAMING MIX PARSER ─────────────────────────────────────
+// Reads SSE stream from Anthropic, accumulates text, and extracts
+// intro and items as they complete in the JSON.
+
+async function streamMix(systemPrompt, userMessage, handlers) {
+  const { onIntro, onSlot, onComplete, onError } = handlers;
+
+  try {
+    // Timeout for the initial connection
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(API_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: SONNET,
+        max_tokens: TOKEN_LIMITS.mix || 4000,
+        stream: true,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessage }],
+      }),
     });
+
+    if (!response.ok) {
+      clearTimeout(timeout);
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    clearTimeout(timeout);
+
+    // Check if streaming is supported in this environment
+    if (!response.body || typeof response.body.getReader !== "function") {
+      throw new Error("Streaming not supported in this environment");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullText = "";
+    let introEmitted = false;
+    let slotsEmitted = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete SSE events
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const eventData = line.slice(6).trim();
+        if (eventData === "[DONE]") continue;
+
+        try {
+          const event = JSON.parse(eventData);
+
+          // Extract text deltas
+          if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+            fullText += event.delta.text;
+
+            // Try to extract intro
+            if (!introEmitted) {
+              const introMatch = fullText.match(/"intro"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+              if (introMatch) {
+                onIntro(introMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n'));
+                introEmitted = true;
+              }
+            }
+
+            // Try to extract complete items
+            const itemRegex = /\{[^{}]*"slotType"\s*:\s*"[^"]*"[^{}]*"reason"\s*:\s*"(?:[^"\\]|\\.)*"[^{}]*\}/g;
+            const matches = fullText.match(itemRegex);
+            if (matches && matches.length > slotsEmitted) {
+              for (let i = slotsEmitted; i < matches.length; i++) {
+                try {
+                  const item = JSON.parse(matches[i]);
+                  onSlot(item, i);
+                  slotsEmitted++;
+                } catch { /* partial match, skip */ }
+              }
+            }
+          }
+        } catch { /* malformed event, skip */ }
+      }
+    }
+
+    // Parse the complete response for caching
+    let fullData = null;
+    try {
+      fullData = JSON.parse(fullText.replace(/```json|```/g, "").trim());
+    } catch {
+      // If full parse fails but we got slots, still ok
+      if (slotsEmitted === 0) {
+        onError("Failed to parse mix response");
+        return;
+      }
+    }
+
+    onComplete(fullData);
+
+  } catch (err) {
+    onError(err.message || "Stream failed");
+  }
+}
+
+// Separate call for the More tab — uses Haiku, cached, fires after mix
+async function fetchConnections(resolvedName, subjectContext) {
+  const cached = cacheGet("conn-tab", resolvedName);
+  if (cached) return cached;
+
+  let userMessage = `Provide metadata for: "${resolvedName}"`;
+  if (subjectContext) {
+    const parts = [];
+    if (subjectContext.domain) parts.push(`Domain: ${subjectContext.domain}`);
+    if (subjectContext.year || subjectContext.yearsActive) parts.push(`Year: ${subjectContext.year || subjectContext.yearsActive}`);
+    if (subjectContext.bio) parts.push(`Bio: ${subjectContext.bio}`);
+    if (parts.length > 0) userMessage += `\n\nThis specifically refers to:\n${parts.join("\n")}`;
+  }
+
+  const data = await callHaiku(CONNECTIONS_PROMPT, userMessage, "connections");
+  cacheSet("conn-tab", resolvedName, data);
+  return data;
 }
 
 async function fetchGraph(resolvedName, subjectContext) {
@@ -337,7 +586,7 @@ async function fetchGraph(resolvedName, subjectContext) {
     if (subjectContext.bio) parts.push(`Bio: ${subjectContext.bio}`);
     if (parts.length > 0) userMessage += `\n\nThis specifically refers to:\n${parts.join("\n")}`;
   }
-  const data = await callSonnet(GRAPH_SYSTEM_PROMPT, userMessage);
+  const data = await callSonnet(GRAPH_SYSTEM_PROMPT, userMessage, "graph");
   cacheSet("graph", resolvedName, data);
   return data;
 }
@@ -386,7 +635,7 @@ function DisambiguationCard({ data, onSelect }) {
         fontSize: "13px", color: "rgba(203,213,225,0.6)",
         fontFamily: "'DM Sans', sans-serif", marginBottom: "16px", lineHeight: 1.6,
       }}>
-        There are a few things that could be. Which one are you looking for?
+        There are a few things this could be. Did you mean:
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {allOptions.map((opt, i) => (
@@ -469,7 +718,7 @@ function AlternativesBar({ alternatives, onSelect }) {
           fontFamily: "'DM Mono', monospace", letterSpacing: "0.03em",
           flexShrink: 0,
         }}>
-          Not this one?
+          Did you mean:
         </span>
         {alternatives.map((alt, i) => (
           <button
@@ -919,6 +1168,165 @@ function InfluenceGraph({ graphData, subjectName, subjectImage, onNavigate }) {
   );
 }
 
+// ─── MORE TAB ─────────────────────────────────────────────────
+
+function MoreTab({ connections, subjectType, subjectName, onNavigate }) {
+  if (!connections) return null;
+
+  const isArtist = ["artist", "band"].includes(subjectType);
+  const isMusicalWork = ["album", "song"].includes(subjectType);
+
+  // Section renderer — only shows if data exists
+  const Section = ({ icon, label, children }) => (
+    <div style={{
+      marginBottom: "20px", padding: "16px 18px",
+      background: "rgba(255,255,255,0.015)",
+      border: "1px solid rgba(255,255,255,0.04)",
+      borderRadius: "6px",
+    }}>
+      <div style={{
+        fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase",
+        color: "rgba(250,204,21,0.5)", fontFamily: "'DM Mono', monospace",
+        fontWeight: 500, marginBottom: "12px",
+      }}>
+        {icon} {label}
+      </div>
+      {children}
+    </div>
+  );
+
+  // Clickable pill for people/items
+  const Pill = ({ name, subtitle, onClick }) => (
+    <span
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "baseline", gap: "5px",
+        padding: "4px 10px", borderRadius: "4px",
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        fontSize: "13px", color: "#e2e8f0",
+        fontFamily: "'DM Sans', sans-serif",
+        cursor: onClick ? "pointer" : "default",
+        transition: "all 0.2s", marginRight: "6px", marginBottom: "6px",
+      }}
+      onMouseEnter={(e) => { if (onClick) { e.currentTarget.style.borderColor = "rgba(250,204,21,0.3)"; e.currentTarget.style.background = "rgba(250,204,21,0.04)"; }}}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+    >
+      {name}
+      {subtitle && (
+        <span style={{
+          fontSize: "10px", color: "rgba(148,163,184,0.45)",
+          fontFamily: "'DM Mono', monospace",
+        }}>{subtitle}</span>
+      )}
+    </span>
+  );
+
+  // Simple text value
+  const Value = ({ text }) => (
+    <div style={{
+      fontSize: "14px", color: "rgba(226,232,240,0.8)",
+      fontFamily: "'DM Sans', sans-serif", lineHeight: 1.6,
+    }}>{text}</div>
+  );
+
+  return (
+    <div style={{ animation: "fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+      {/* Origin / Location */}
+      {connections.origin && (
+        <Section icon="◈" label="Origin">
+          <Value text={connections.origin} />
+        </Section>
+      )}
+
+      {/* Recorded At (works only) */}
+      {connections.recordedAt && (
+        <Section icon="◉" label="Recorded At">
+          <Value text={connections.recordedAt} />
+        </Section>
+      )}
+
+      {/* Genre */}
+      {connections.genre?.length > 0 && (
+        <Section icon="♫" label="Genre">
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {connections.genre.map((g, i) => (
+              <Pill key={i} name={g} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Active Period */}
+      {connections.activePeriod && (
+        <Section icon="◷" label="Active Period">
+          <Value text={connections.activePeriod} />
+        </Section>
+      )}
+
+      {/* Key People */}
+      {connections.keyPeople?.length > 0 && (
+        <Section icon="⊕" label="Key People">
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {connections.keyPeople.map((person, i) => (
+              <Pill
+                key={i}
+                name={person.name}
+                subtitle={person.role}
+                onClick={() => onNavigate(person.name)}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Covers Performed */}
+      {connections.coversPerformed?.length > 0 && (
+        <Section icon="◁" label={isArtist ? "Covers They Perform" : "Songs That Are Covers"}>
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {connections.coversPerformed.map((cover, i) => (
+              <Pill key={i} name={cover} onClick={() => onNavigate(cover)} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Covered By */}
+      {connections.coveredBy?.length > 0 && (
+        <Section icon="▷" label={isArtist ? "Artists Who Cover Them" : "Covered By"}>
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {connections.coveredBy.map((artist, i) => (
+              <Pill key={i} name={artist} onClick={() => onNavigate(artist)} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Signature Gear */}
+      {connections.signatureGear?.length > 0 && (
+        <Section icon="⚙" label="Instruments & Gear">
+          <div style={{ display: "flex", flexWrap: "wrap" }}>
+            {connections.signatureGear.map((gear, i) => (
+              <Pill key={i} name={gear} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Empty state */}
+      {!connections.origin && !connections.keyPeople?.length && !connections.signatureGear?.length && (
+        <div style={{
+          padding: "40px 20px", textAlign: "center",
+          color: "rgba(148,163,184,0.3)", fontFamily: "'DM Sans', sans-serif",
+          fontSize: "14px",
+        }}>
+          No additional connections available for this subject.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, altIndex, altLoading }) {
   const slotMeta = MIX_SLOT_TYPES.find((s) => s.id === item.slotType) || MIX_SLOT_TYPES[0];
   const colors = SLOT_COLORS[item.slotType] || SLOT_COLORS.titan;
@@ -944,18 +1352,18 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
       overflow: "hidden",
     }}>
       <div style={{ padding: "18px 20px" }}>
-        {/* Slot type + year + next arrow */}
+        {/* Slot type + next arrow */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           marginBottom: "10px",
         }}>
-          <span style={{
-            fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase",
-            color: colors.text, fontFamily: "'DM Mono', monospace", fontWeight: 500,
-          }}>
-            {slotMeta.emoji} {slotMeta.label}
-          </span>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{
+              fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase",
+              color: colors.text, fontFamily: "'DM Mono', monospace", fontWeight: 500,
+            }}>
+              {slotMeta.emoji} {slotMeta.label}
+            </span>
             {/* Position dots */}
             {altCount > 1 && (
               <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
@@ -968,44 +1376,36 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
                 ))}
               </div>
             )}
-            {item.year && (
-              <span style={{
-                fontSize: "10px", color: "rgba(148,163,184,0.4)",
-                fontFamily: "'DM Mono', monospace",
-              }}>
-                {item.year}
-              </span>
-            )}
-            {/* Next arrow */}
-            <button
-              onClick={(e) => { e.stopPropagation(); onNext(item.slotType); }}
-              disabled={altLoading}
-              style={{
-                background: "rgba(255,255,255,0.03)", 
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: "4px", padding: "5px 10px",
-                color: altLoading ? "rgba(250,204,21,0.3)" : "rgba(148,163,184,0.5)",
-                cursor: altLoading ? "wait" : "pointer",
-                fontSize: "13px", lineHeight: 1, transition: "all 0.2s",
-                display: "flex", alignItems: "center", gap: "5px",
-                fontFamily: "'DM Mono', monospace",
-                letterSpacing: "0.03em",
-              }}
-              onMouseEnter={(e) => { if (!altLoading) { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.text; e.currentTarget.style.background = colors.bg; }}}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "rgba(148,163,184,0.5)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
-              title="See another"
-            >
-              {altLoading ? (
-                <div style={{
-                  width: 6, height: 6, borderRadius: "50%",
-                  background: "rgba(250,204,21,0.5)",
-                  animation: "breathe 1.2s ease-in-out infinite",
-                }} />
-              ) : (
-                <><span style={{ fontSize: "10px" }}>MORE</span> →</>
-              )}
-            </button>
           </div>
+          {/* Next arrow */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onNext(item.slotType); }}
+            disabled={altLoading}
+            style={{
+              background: "rgba(255,255,255,0.03)", 
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: "4px", padding: "5px 10px",
+              color: altLoading ? "rgba(250,204,21,0.3)" : "rgba(148,163,184,0.5)",
+              cursor: altLoading ? "wait" : "pointer",
+              fontSize: "13px", lineHeight: 1, transition: "all 0.2s",
+              display: "flex", alignItems: "center", gap: "5px",
+              fontFamily: "'DM Mono', monospace",
+              letterSpacing: "0.03em",
+            }}
+            onMouseEnter={(e) => { if (!altLoading) { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.text; e.currentTarget.style.background = colors.bg; }}}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "rgba(148,163,184,0.5)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+            title="See another"
+          >
+            {altLoading ? (
+              <div style={{
+                width: 6, height: 6, borderRadius: "50%",
+                background: "rgba(250,204,21,0.5)",
+                animation: "breathe 1.2s ease-in-out infinite",
+              }} />
+            ) : (
+              <><span style={{ fontSize: "10px" }}>MORE</span> →</>
+            )}
+          </button>
         </div>
 
         {/* Title + image */}
@@ -1031,21 +1431,31 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
             }}>
               {item.title}
             </div>
-            <span
-              onClick={() => onNavigate(item.creator)}
-              style={{
-                fontSize: "13px", color: colors.text,
-                fontFamily: "'DM Sans', sans-serif",
-                cursor: "pointer",
-                borderBottom: "1px solid transparent",
-                transition: "border-color 0.2s", display: "inline",
-              }}
-              onMouseEnter={(e) => e.target.style.borderBottomColor = colors.text}
-              onMouseLeave={(e) => e.target.style.borderBottomColor = "transparent"}
-              title={`Explore ${item.creator}`}
-            >
-              {item.creator}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "0" }}>
+              <span
+                onClick={() => onNavigate(item.creator)}
+                style={{
+                  fontSize: "13px", color: colors.text,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: "pointer",
+                  borderBottom: "1px solid transparent",
+                  transition: "border-color 0.2s", display: "inline",
+                }}
+                onMouseEnter={(e) => e.target.style.borderBottomColor = colors.text}
+                onMouseLeave={(e) => e.target.style.borderBottomColor = "transparent"}
+                title={`Explore ${item.creator}`}
+              >
+                {item.creator}
+              </span>
+              {item.year && (
+                <span style={{
+                  fontSize: "12px", color: "rgba(148,163,184,0.4)",
+                  fontFamily: "'DM Mono', monospace", marginLeft: "6px",
+                }}>
+                  · {item.year}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1312,6 +1722,8 @@ export default function KyndaApp() {
   const [slots, setSlots] = useState([]);
   const [visibleSlots, setVisibleSlots] = useState(new Set());
   const [isLoading, setIsLoading] = useState(false);
+  const [loadTime, setLoadTime] = useState(null);
+  const loadStartRef = useRef(null);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
   const [disambiguation, setDisambiguation] = useState(null);
@@ -1321,6 +1733,9 @@ export default function KyndaApp() {
   const [slotAlts, setSlotAlts] = useState({}); // { slotType: [item, item, ...] }
   const [slotAltIndex, setSlotAltIndex] = useState({}); // { slotType: currentIndex }
   const [slotAltLoading, setSlotAltLoading] = useState({}); // { slotType: bool }
+  const [connections, setConnections] = useState(null);
+  const [subjectType, setSubjectType] = useState(null);
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
   const requestIdRef = useRef(0);
   const contentRef = useRef(null);
   const callbacksRef = useRef(null); // store callbacks for deferred mix fire
@@ -1336,6 +1751,7 @@ export default function KyndaApp() {
     setDisambiguation(null);
     setGraphData(null); setGraphLoading(false); setViewMode("mix");
     setSlotAlts({}); setSlotAltIndex({}); setSlotAltLoading({});
+    setConnections(null); setSubjectType(null); setConnectionsLoading(false);
     setHistory((prev) => {
       const idx = prev.indexOf(query);
       if (idx !== -1) return prev.slice(0, idx + 1);
@@ -1344,28 +1760,37 @@ export default function KyndaApp() {
 
     if (contentRef.current) contentRef.current.scrollTo({ top: 0, behavior: "smooth" });
 
+    const searchStart = Date.now();
     const callbacks = {
       checkCancelled,
       onSubject: (data) => {
+        perfTrack("subject_visible", Date.now() - searchStart, {});
         setSubject(data);
+        callbacksRef.current._resolvedSubject = data;
         fetchWikiImage(data.name, data.domain).then((url) => {
           if (!checkCancelled() && url) setSubjectImage(url);
         });
       },
       onAlternatives: (data) => {
         setDisambiguation(data);
-        // If ambiguous, we're waiting — stop the loading indicator
         if (data.confidence === "ambiguous") setIsLoading(false);
       },
       onIntro: (text) => setIntro(text),
+      onConnections: (data, type) => { setConnections(data); setSubjectType(type); },
       onSlot: (item, index) => {
+        if (index === 0) perfTrack("first_slot", Date.now() - searchStart, {});
         setSlots((prev) => [...prev, item]);
         setTimeout(() => {
           if (!checkCancelled()) setVisibleSlots((prev) => new Set([...prev, index]));
         }, 60);
       },
       onError: (msg) => setError(msg),
-      onComplete: () => setIsLoading(false),
+      onComplete: () => {
+        const total = Date.now() - searchStart;
+        perfTrack("search_complete", total, {});
+        setLoadTime(total);
+        setIsLoading(false);
+      },
     };
     callbacksRef.current = callbacks;
 
@@ -1391,7 +1816,7 @@ export default function KyndaApp() {
       });
     } else {
       // It's an alternative with minimal data — do a fresh lookup
-      callHaiku(DISAMBIGUATE_SYSTEM_PROMPT, `Identify specifically: "${selected.name}" (${selected.domain}, ${selected.year || ""}) — ${selected.distinguisher}`)
+      callHaiku(DISAMBIGUATE_SYSTEM_PROMPT, `Identify specifically: "${selected.name}" (${selected.domain}, ${selected.year || ""}) — ${selected.distinguisher}`, "disambiguate_resolve")
         .then((data) => {
           if (checkCancelled()) return;
           if (data.primary) {
@@ -1424,7 +1849,19 @@ export default function KyndaApp() {
         }, 60);
       },
       onError: (msg) => setError(msg),
-      onComplete: () => setIsLoading(false),
+      onComplete: () => {
+        setIsLoading(false);
+        if (!checkCancelled()) {
+          fetchConnections(selected.name, selected)
+            .then((data) => {
+              if (!checkCancelled() && data) {
+                setConnections(data.connections);
+                setSubjectType(data.subjectType);
+              }
+            })
+            .catch(() => {});
+        }
+      },
     };
 
     fireMix(selected.name, callbacks, selected);
@@ -1501,6 +1938,7 @@ export default function KyndaApp() {
             setIntro(null); setSubjectImage(null); setDisambiguation(null);
             setGraphData(null); setGraphLoading(false); setViewMode("mix");
             setSlotAlts({}); setSlotAltIndex({}); setSlotAltLoading({});
+            setConnections(null); setSubjectType(null); setConnectionsLoading(false);
           }}
           style={{ cursor: "pointer", display: "flex", alignItems: "baseline", gap: "3px" }}
         >
@@ -1597,6 +2035,7 @@ export default function KyndaApp() {
                   {[
                     { id: "mix", label: "MIX" },
                     { id: "graph", label: "GRAPH" },
+                    { id: "more", label: "MORE" },
                   ].map((tab) => (
                     <button
                       key={tab.id}
@@ -1608,6 +2047,16 @@ export default function KyndaApp() {
                           fetchGraph(subject.name, subject)
                             .then((data) => { setGraphData(data); setGraphLoading(false); })
                             .catch(() => setGraphLoading(false));
+                        }
+                        // Lazy-load connections on first switch
+                        if (tab.id === "more" && !connections && !connectionsLoading && subject) {
+                          setConnectionsLoading(true);
+                          fetchConnections(subject.name, subject)
+                            .then((data) => {
+                              if (data) { setConnections(data.connections); setSubjectType(data.subjectType); }
+                            })
+                            .catch(() => {})
+                            .finally(() => setConnectionsLoading(false));
                         }
                       }}
                       style={{
@@ -1702,7 +2151,7 @@ export default function KyndaApp() {
                         <span style={{
                           fontSize: "10px", color: "rgba(148,163,184,0.25)",
                           fontFamily: "'DM Mono', monospace",
-                        }}>{slots.length < 8 && isLoading ? `${slots.length}/8` : "8 slots"}</span>
+                        }}>{slots.length < 8 && isLoading ? `${slots.length}/8` : "8 slots"}{loadTime && !isLoading && ` · ${(loadTime / 1000).toFixed(1)}s`}</span>
                       </div>
 
                       <SlotLegend />
@@ -1723,6 +2172,43 @@ export default function KyndaApp() {
                     </div>
                   )}
 
+                  <div style={{ height: "80px" }} />
+                </div>
+              </div>
+            )}
+
+            {/* More view */}
+            {viewMode === "more" && (
+              <div style={{ flex: 1, overflow: "auto", padding: "28px" }}>
+                <div style={{ maxWidth: "660px", margin: "0 auto" }}>
+                  {connections ? (
+                    <MoreTab
+                      connections={connections}
+                      subjectType={subjectType}
+                      subjectName={subject?.name || currentQuery}
+                      onNavigate={handleSearch}
+                    />
+                  ) : connectionsLoading ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "20px" }}>
+                      <div style={{
+                        width: 7, height: 7, borderRadius: "50%",
+                        background: "rgba(250,204,21,0.55)",
+                        animation: "breathe 1.4s ease-in-out infinite",
+                      }} />
+                      <span style={{
+                        fontSize: "12px", color: "rgba(250,204,21,0.45)",
+                        fontFamily: "'DM Mono', monospace", letterSpacing: "0.04em",
+                      }}>Loading connections...</span>
+                    </div>
+                  ) : (
+                    <div style={{
+                      padding: "40px 20px", textAlign: "center",
+                      color: "rgba(148,163,184,0.3)", fontFamily: "'DM Sans', sans-serif",
+                      fontSize: "14px",
+                    }}>
+                      Search for something to see connections.
+                    </div>
+                  )}
                   <div style={{ height: "80px" }} />
                 </div>
               </div>
