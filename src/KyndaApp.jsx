@@ -1410,19 +1410,21 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
 
         {/* Title + image */}
         <div style={{ display: "flex", gap: "16px", marginBottom: "14px" }}>
-          {imageUrl && (
-            <div style={{
-              width: 64, height: 64, borderRadius: "5px", overflow: "hidden", flexShrink: 0,
-              background: "rgba(255,255,255,0.03)",
-              opacity: imgLoaded ? 1 : 0, transition: "opacity 0.4s ease",
-            }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "5px", overflow: "hidden", flexShrink: 0,
+            background: "rgba(255,255,255,0.03)",
+          }}>
+            {imageUrl && (
               <img
                 src={imageUrl} alt=""
                 onLoad={() => setImgLoaded(true)}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                style={{
+                  width: "100%", height: "100%", objectFit: "cover",
+                  opacity: imgLoaded ? 1 : 0, transition: "opacity 0.4s ease",
+                }}
               />
-            </div>
-          )}
+            )}
+          </div>
           <div style={{ flex: 1 }}>
             <div style={{
               fontSize: "19px", fontWeight: 400, color: "#f1f5f9",
@@ -1459,14 +1461,18 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
           </div>
         </div>
 
-        {/* Reason */}
-        <div style={{
-          fontSize: "13.5px", lineHeight: 1.72,
-          color: "rgba(203,213,225,0.72)",
-          fontFamily: "'DM Sans', sans-serif",
-        }}>
-          {item.reason}
-        </div>
+        {/* Reason — typewriter reveal */}
+        <RevealText
+          text={item.reason}
+          delay={200}
+          speed={30}
+          style={{
+            fontSize: "13.5px", lineHeight: 1.72,
+            color: "rgba(203,213,225,0.72)",
+            fontFamily: "'DM Sans', sans-serif",
+            margin: 0,
+          }}
+        />
       </div>
     </div>
   );
@@ -1564,14 +1570,18 @@ function SubjectCard({ subject, imageUrl, intro }) {
   return (
     <div style={{ marginBottom: "32px", animation: "fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1)" }}>
       <div style={{ display: "flex", gap: "18px", alignItems: "flex-start" }}>
-        {imageUrl && (
-          <div style={{
-            width: 88, height: 88, borderRadius: "6px", overflow: "hidden", flexShrink: 0,
-            border: "1px solid rgba(255,255,255,0.06)",
-          }}>
-            <img src={imageUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          </div>
-        )}
+        <div style={{
+          width: 88, height: 88, borderRadius: "6px", overflow: "hidden", flexShrink: 0,
+          border: "1px solid rgba(255,255,255,0.06)",
+          background: "rgba(255,255,255,0.03)",
+        }}>
+          {imageUrl && (
+            <img src={imageUrl} alt="" style={{
+              width: "100%", height: "100%", objectFit: "cover",
+              animation: "fadeIn 0.4s ease",
+            }} />
+          )}
+        </div>
         <div style={{ flex: 1 }}>
           <div style={{
             fontSize: "10px", letterSpacing: "0.12em", textTransform: "uppercase",
@@ -1914,6 +1924,7 @@ export default function KyndaApp() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
         @keyframes fadeInUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         @keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
