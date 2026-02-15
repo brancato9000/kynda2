@@ -5,7 +5,7 @@ import * as d3 from "d3";
 
 const MIX_SLOT_TYPES = [
   { id: "titan", label: "Key Influence", emoji: "◆", description: "A foundational work cited as a seminal influence" },
-  { id: "ghost", label: "Hidden Thread", emoji: "◇", description: "An obscure or avant-garde influence not widely recognized" },
+  { id: "ghost", label: "Influencia Obscura", emoji: "◇", description: "An obscure or avant-garde influence not widely recognized" },
   { id: "geography", label: "Local Roots", emoji: "◈", description: "A connection rooted in shared geography or scene" },
   { id: "culture", label: "Beyond the Medium", emoji: "✦", description: "An influence from outside the subject's primary domain" },
   { id: "peer", label: "Peer", emoji: "◎", description: "A contemporary working in similar creative orbit" },
@@ -835,7 +835,7 @@ function InfluenceGraph({ graphData, subjectName, subjectImage, onNavigate }) {
 
     const addGroup = (items, type, targetX) => {
       (items || []).forEach((item, i) => {
-        const r = 16 + (item.significance / 10) * 24;
+        const r = 12 + (item.significance / 10) * 36;
         nodes.push({
           id: `${type}-${i}`, name: item.name, type, year: item.year,
           significance: item.significance, r,
@@ -1044,9 +1044,9 @@ function InfluenceGraph({ graphData, subjectName, subjectImage, onNavigate }) {
         .text(graphData.domain)
         .attr("x", w - 24).attr("y", h - 20)
         .attr("text-anchor", "end")
-        .attr("fill", "rgba(255,255,255,0.04)")
+        .attr("fill", "rgba(255,255,255,0.07)")
         .attr("font-size", "72px")
-        .attr("font-weight", "bold")
+        .attr("font-weight", "900")
         .attr("font-family", "'DM Sans', sans-serif")
         .attr("pointer-events", "none");
     }
@@ -1327,7 +1327,7 @@ function MoreTab({ connections, subjectType, subjectName, onNavigate }) {
   );
 }
 
-function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, altIndex, altLoading }) {
+function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, altIndex, altLoading, subjectDomain }) {
   const slotMeta = MIX_SLOT_TYPES.find((s) => s.id === item.slotType) || MIX_SLOT_TYPES[0];
   const colors = SLOT_COLORS[item.slotType] || SLOT_COLORS.titan;
   const [imageUrl, setImageUrl] = useState(null);
@@ -1362,7 +1362,7 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
               fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase",
               color: colors.text, fontFamily: "'DM Mono', monospace", fontWeight: 500,
             }}>
-              {slotMeta.emoji} {slotMeta.label}
+              {slotMeta.emoji} {item.slotType === "culture" && subjectDomain ? `Beyond ${subjectDomain.charAt(0).toUpperCase() + subjectDomain.slice(1).toLowerCase()}` : slotMeta.label}
             </span>
             {/* Position dots */}
             {altCount > 1 && (
@@ -2174,6 +2174,7 @@ export default function KyndaApp() {
                           altCount={slotAlts[item.slotType]?.length || 0}
                           altIndex={slotAltIndex[item.slotType] || 0}
                           altLoading={!!slotAltLoading[item.slotType]}
+                          subjectDomain={subject?.domain}
                         />
                       ))}
 
