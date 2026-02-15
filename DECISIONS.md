@@ -183,3 +183,53 @@ kynda-deploy/
 ### AD-17: Instruments & gear
 **Decision:** Understanding the tools used to create a work of culture is a distinct exploratory route. For music: specific instruments, amplifiers, pedals, recording equipment, production techniques. For an artist: their signature gear and how it shapes their sound.
 **Rationale:** Users got excited about this in the original product. An artist's tools are inextricably linked to their identity — Eric Clapton's sound is inseparable from his guitar choices. This is a unique angle that most recommendation engines don't surface.
+
+---
+
+## Signal Integrity — An Honest Assessment (2026-02-14)
+
+This section documents a critical ongoing question: **how trustworthy are Kynda's influence connections, and how do we make them more rigorous over time?**
+
+### The Current Reality
+
+Right now, the scoring and sourcing of connections is essentially opaque.
+
+**Graph scoring:** The graph prompt asks Claude to assign a `significance` score from 1-10 for each node, which determines the node's visual size. But this score is Claude's internal sense of cultural importance — there's no explicit rubric, no weighted criteria, no traceable methodology. When Claude says "Pixies get a 7 and Can get a 5," it's drawing on patterns in its training data, not citing a specific metric. It's a black box.
+
+**KyndaMix sourcing:** The 8 mix items are chosen based on Claude's general knowledge of documented influences. The `reason` field references interviews, collaborations, and historical events, but these citations are not verified against a source database. Claude generates plausible-sounding citations based on what it knows, but it can confabulate — it might say "Thom Yorke cited Autechre in a 1997 interview" when that interview doesn't exist or said something slightly different.
+
+**The fundamental gap:** There is no ground truth layer. No verified database of influence connections. No distinction between "Claude is confident about this" and "Claude is guessing." No way for a user to know which connections are rock-solid and which are inference.
+
+### What We Want to Build Toward
+
+The long-term architectural aspiration is a **multi-layer influence system** where AI-generated maps are a starting point, not the final word.
+
+**Phase 1 (current):** AI-generated maps using Claude's knowledge. Useful for discovery, but unverified. The maps inspire curiosity and exploration.
+
+**Phase 2:** Introduce an explicit scoring rubric so the AI shows its work. Define weighted criteria: direct citation in an interview (weight 10), shared producer/collaborator (weight 7), same label/scene/era (weight 4), stylistic similarity documented by critics (weight 3). The prompt forces Claude to specify which criteria apply for each connection. The composite score becomes the node size. Still AI-generated, but transparent and consistent.
+
+**Phase 3:** Add a verified source layer. Use curated databases (MusicBrainz for relationships, Discogs for credits, AllMusic for influence trees) where connections are pre-verified. Claude draws from verified sources first, fills gaps with its own knowledge, and marks which is which. Each connection gets a confidence indicator: "verified" (from structured databases), "likely" (strong pattern in training data), or "inferred" (stylistic reasoning). When real citations exist (interview URLs, liner notes, documented quotes), they are linked directly.
+
+**Phase 4:** Human curation. The AI-generated maps serve as a starting point that inspires humans to do the work of hand-curating influence maps. Critics, fans, and music journalists can add, remove, or re-weight connections. Each contribution is attributed and sourced.
+
+**Phase 5:** Artist-curated maps. Artists themselves curate their own influence maps — defining who and what shaped their work, in their own words. This is the most authoritative layer possible.
+
+**Phase 6:** Multi-perspective toggle. Users can toggle between different map perspectives:
+- **Artist's map** — hand-curated by the artist themselves
+- **Critical consensus** — curated by critics and music journalists
+- **Fan perspective** — crowd-sourced from the community
+- **AI-generated** — Claude's algorithmic interpretation
+
+The differences between these maps become a discovery tool in themselves. Where an artist's self-described influences diverge from what critics see, or what fans believe — those gaps are where the most interesting conversations happen.
+
+### Immediate Next Steps
+
+For v2 launch, the priority is:
+1. **Make the current scoring system explicit** — define and document the rubric Claude uses, even if it's still AI-judged
+2. **Add confidence indicators** — mark each connection as verified/likely/inferred so users know what they're looking at
+3. **Flag confabulation risk** — be transparent that AI-generated citations should be verified independently
+4. **Design the data model** — architect the system so that human-curated connections can coexist alongside AI-generated ones from day one, even if the human curation features aren't built yet
+
+### The Core Principle
+
+Kynda's AI layer is a **starting point, not an authority.** The long-term value is in the human curation it inspires — the AI maps the territory quickly and imperfectly, humans refine it with knowledge and taste. The architecture must support this evolution from the beginning.
