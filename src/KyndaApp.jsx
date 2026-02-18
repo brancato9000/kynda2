@@ -97,6 +97,14 @@ CRITICAL RULES:
 - The "culture" slot MUST be from a different medium than the subject's primary domain.
 - For the "essential" slot, the creator field should be the subject themselves.
 - Prioritize accuracy. If a connection is rumored or based on "vibes," exclude it.
+- VERIFY CREATOR ATTRIBUTION: Before assigning any item, confirm that the title actually belongs to the creator you are listing. Do not attribute one artist's work to another artist. This is the most basic factual requirement. If you are not certain a work belongs to a specific creator, do not include it.
+
+CONFIDENCE TIERS — assign one to every item:
+- "verified": Documented in interviews, liner notes, autobiographies, or widely corroborated by multiple reliable sources. Only use "verified" when you are certain the factual claims (creator, title, year, and the specific connection described) are all accurate and documented. If you have ANY doubt about basic facts like who created a work, use "inferred" at most.
+- "likely": Strongly supported by circumstantial evidence (shared producers, overlapping scenes, consistent critical commentary) but not explicitly stated by the subject.
+- "inferred": Based on stylistic/thematic parallels with no direct documentation. When confidence is "inferred", sources MUST be an empty array [].
+
+SOURCES — an array of specific source descriptions for the claim. Examples: "AllMusic biography", "1997 Rolling Stone interview", "Radiohead Meeting People Is Easy documentary". Do NOT fabricate sources. Only cite sources you are confident actually exist. If you are unsure whether a source exists, omit it. For "inferred" confidence, always use [].
 
 Respond ONLY with valid JSON, no markdown, no preamble:
 {
@@ -107,7 +115,9 @@ Respond ONLY with valid JSON, no markdown, no preamble:
       "title": "Work title",
       "creator": "Creator name",
       "year": "YYYY",
-      "reason": "425-475 characters of specific historical context with cited evidence"
+      "reason": "425-475 characters of specific historical context with cited evidence",
+      "confidence": "verified | likely | inferred",
+      "sources": ["Specific source description"]
     }
   ]
 }
@@ -160,6 +170,13 @@ RULES:
 - NEVER cite the subject as an influence on themselves — no works by the subject unless the slot type is "essential"
 - Prioritize accuracy over vibes
 
+CONFIDENCE TIERS — assign one to every item:
+- "verified": Documented in interviews, liner notes, autobiographies, or widely corroborated by multiple reliable sources.
+- "likely": Strongly supported by circumstantial evidence (shared producers, overlapping scenes, consistent critical commentary) but not explicitly stated by the subject.
+- "inferred": Based on stylistic/thematic parallels with no direct documentation. When confidence is "inferred", sources MUST be an empty array [].
+
+SOURCES — an array of specific source descriptions for the claim. Do NOT fabricate sources. Only cite sources you are confident actually exist. For "inferred" confidence, always use [].
+
 Respond ONLY with valid JSON, no markdown, no preamble:
 {
   "items": [
@@ -168,7 +185,9 @@ Respond ONLY with valid JSON, no markdown, no preamble:
       "title": "Work title",
       "creator": "Creator name",
       "year": "YYYY",
-      "reason": "425-475 characters of specific historical context"
+      "reason": "425-475 characters of specific historical context",
+      "confidence": "verified | likely | inferred",
+      "sources": ["Specific source description"]
     }
   ]
 }`;
@@ -1473,6 +1492,26 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
             margin: 0,
           }}
         />
+        {item.confidence && (() => {
+          const tier = item.confidence;
+          const color = tier === "verified" ? "rgba(52,211,153,0.8)"
+            : tier === "likely" ? "rgba(250,204,21,0.7)"
+            : "rgba(148,163,184,0.45)";
+          const label = tier === "verified" ? "Verified" : tier === "likely" ? "Likely" : "Inferred";
+          return (
+            <div style={{ marginTop: "12px", fontSize: "11px", fontFamily: "'DM Mono', monospace", lineHeight: 1.5 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ color: "rgba(148,163,184,0.4)" }}>Confidence:</span>
+                <span style={{ color }}>● {label}</span>
+              </div>
+              {item.sources?.length > 0 && (
+                <div style={{ color: "rgba(148,163,184,0.4)", marginTop: "3px" }}>
+                  {item.sources.join(" · ")}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1746,6 +1785,7 @@ export default function KyndaApp() {
   const [connections, setConnections] = useState(null);
   const [subjectType, setSubjectType] = useState(null);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const requestIdRef = useRef(0);
   const contentRef = useRef(null);
   const callbacksRef = useRef(null); // store callbacks for deferred mix fire
@@ -1907,6 +1947,30 @@ export default function KyndaApp() {
       setSlots((prev) => prev.map((s) => s.slotType === slotType ? alts[nextIdx] : s));
     }
   }, [slotAlts, slotAltIndex, slots, subject, currentQuery]);
+
+  const SHARE_EMOJI = {
+    titan: "🔷", ghost: "👻", geography: "🌍", culture: "🎭",
+    peer: "🤝", essential: "⭐", legacy: "🔮", collaborator: "🎼",
+  };
+
+  const handleCopyMix = useCallback(() => {
+    if (!subject || slots.length === 0) return;
+    const subjectName = subject.name;
+    const lines = slots.map((item) => {
+      const meta = MIX_SLOT_TYPES.find((s) => s.id === item.slotType);
+      const emoji = SHARE_EMOJI[item.slotType] || "·";
+      let label = (meta?.label || item.slotType).toUpperCase();
+      if (item.slotType === "culture" && subject.domain) {
+        label = `BEYOND ${subject.domain.toUpperCase()}`;
+      }
+      return `${emoji} ${label}: ${item.title} by ${item.creator} (${item.year})`;
+    });
+    const text = `${subjectName} — KyndaMix by Kynda\n8 things to try if you love ${subjectName}\n\n${lines.join("\n")}\n\nDiscover more at kynda.ai`;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [subject, slots]);
 
   const showWelcome = !currentQuery && !isLoading;
 
@@ -2181,6 +2245,37 @@ export default function KyndaApp() {
                       {isLoading && Array.from({ length: Math.max(0, 8 - slots.length) }, (_, i) => (
                         <SlotSkeleton key={`sk-${i}`} index={slots.length + i} />
                       ))}
+
+                      {/* Share button — only when all 8 slots loaded */}
+                      {slots.length === 8 && !isLoading && (
+                        <div style={{ display: "flex", justifyContent: "center", marginTop: "8px", position: "relative" }}>
+                          <button
+                            onClick={handleCopyMix}
+                            style={{
+                              padding: "7px 16px", borderRadius: "4px",
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              background: "rgba(255,255,255,0.03)",
+                              color: "rgba(148,163,184,0.5)",
+                              fontSize: "10px", fontFamily: "'DM Mono', monospace",
+                              letterSpacing: "0.06em", cursor: "pointer", transition: "all 0.2s",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(250,204,21,0.25)"; e.currentTarget.style.color = "rgba(250,204,21,0.7)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "rgba(148,163,184,0.5)"; }}
+                          >
+                            Share KyndaMix
+                          </button>
+                          {copied && (
+                            <span style={{
+                              position: "absolute", top: "-28px",
+                              fontSize: "11px", fontFamily: "'DM Mono', monospace",
+                              color: "rgba(52,211,153,0.8)",
+                              animation: "fadeIn 0.15s ease",
+                            }}>
+                              Copied!
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
