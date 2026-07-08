@@ -1,0 +1,17 @@
+{
+  "intro": "2-3 sentences contextualizing this KyndaMix for the subject.",
+  "items": [
+    {
+      "slotType": "titan",
+      "title": "Example Album",
+      "creator": "Example Artist",
+      "year": "1997",
+      "reason": "425-475 characters of specific historical context explaining the connection. This reason should cite specific works, interviews, documented quotes, collaborations, or historical events. Avoid generic descriptions. The goal is to illuminate a real, documented relationship between the subject and this entry with enough detail that a reader learns something new about both.",
+      "confidence": "verified",
+      "sources": [
+        "AllMusic biography",
+        { "label": "1997 Rolling Stone interview", "url": "https://example.com/interview" }
+      ]
+    }
+  ]
+}

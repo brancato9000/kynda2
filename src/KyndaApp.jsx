@@ -1,6 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as d3 from "d3";
 
+// ─── FEEDBACK LOG ─────────────────────────────────────────────
+const feedbackLog = [];
+
+// ─── CURATED OVERRIDES ────────────────────────────────────────
+// Normalized subject name → full mix data object. Bypasses AI call entirely.
+const CURATED_OVERRIDES = {
+  "test": {
+    intro: "This is a curated test result.",
+    items: [{ slotType: "titan", title: "Test Work", creator: "Test Creator", year: "2025", reason: "This is a test of the curated override system. When you see this card it means the override lookup is working correctly and the system will serve curated results instead of calling the AI. This confirms the three-tier lookup priority is functioning as designed, with curated overrides taking precedence over both the persistent cache and fresh AI generation from Claude.", confidence: "verified", sources: ["Manual curation test"] }],
+  },
+  "radiohead": {
+    intro: "CURATED: This is a hand-curated Radiohead mix.",
+    items: [{ slotType: "titan", title: "Surfer Rosa", creator: "Pixies", year: "1988", reason: "This is a curated test entry to confirm the override system is working. If you see this card, curated overrides are functioning correctly and taking priority over AI generation. The Pixies are indeed a key Radiohead influence — Thom Yorke has cited their quiet-loud dynamics as foundational to the band's songwriting approach, particularly on The Bends and OK Computer. This entry was manually verified and corrected.", confidence: "verified", sources: ["Manual curation"] }],
+  },
+};
+
 // ─── DATA MODEL v2.0 ──────────────────────────────────────────
 
 const MIX_SLOT_TYPES = [
@@ -91,6 +107,7 @@ Create a "KyndaMix": 8 connected works that illuminate the influences, peers, an
 8. collaborator — A KEY CREATIVE PARTNER (producer, co-writer, cinematographer, bandmate, etc.) who shaped the work.
 
 CRITICAL RULES:
+- ABSOLUTE RULE: The title field must be a work CREATED BY the entity in the creator field. Never put the subject's own work as the title for another creator. Example: if the subject is Radiohead and you want to recommend The Pixies as a key influence, the title must be a Pixies work (like 'Surfer Rosa' or 'Doolittle'), NOT a Radiohead work (like 'The Bends' or 'OK Computer'). Triple-check every item: does the creator actually have a work with this exact title? If not, fix it before responding.
 - Each item's "reason" MUST be 425-475 characters. This is a hard requirement — count carefully. The reason must contain SPECIFIC historical context: cite specific works, interviews, documented quotes, collaborations, or historical events. No generic descriptions.
 - NEVER cite the subject as an influence on themselves. No work by the subject should appear in titan, ghost, geography, culture, peer, legacy, or collaborator slots. The ONLY slot where the subject's own work belongs is "essential."
 - The "ghost" slot is the most important for discovery — find something genuinely surprising and obscure.
@@ -401,6 +418,26 @@ function fireMix(resolvedName, callbacks, subjectContext) {
     if (parts.length > 0) {
       userMessage = `Create a KyndaMix for: "${resolvedName}"\n\nThis specifically refers to:\n${parts.join("\n")}`;
     }
+  }
+
+  // Curated override — skip AI entirely
+  const curatedKey = resolvedName.toLowerCase().trim();
+  const curated = CURATED_OVERRIDES[curatedKey];
+  if (curated) {
+    perfTrack("curated", 0, { subject: resolvedName });
+    (async () => {
+      if (checkCancelled()) return;
+      if (curated.intro) onIntro(curated.intro);
+      if (curated.items) {
+        for (let i = 0; i < curated.items.length; i++) {
+          if (checkCancelled()) return;
+          await new Promise((r) => setTimeout(r, i === 0 ? 60 : 150));
+          onSlot(curated.items[i], i);
+        }
+      }
+      if (!checkCancelled()) onComplete();
+    })();
+    return;
   }
 
   // Cached path — instant, use batch emit with cascade
@@ -1346,11 +1383,15 @@ function MoreTab({ connections, subjectType, subjectName, onNavigate }) {
   );
 }
 
-function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, altIndex, altLoading, subjectDomain }) {
+function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, altIndex, altLoading, subjectDomain, subjectName }) {
   const slotMeta = MIX_SLOT_TYPES.find((s) => s.id === item.slotType) || MIX_SLOT_TYPES[0];
   const colors = SLOT_COLORS[item.slotType] || SLOT_COLORS.titan;
   const [imageUrl, setImageUrl] = useState(null);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [vote, setVote] = useState(null); // "up" | "down" | null
+  const [comment, setComment] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const [showThanks, setShowThanks] = useState(false);
 
   useEffect(() => {
     setImageUrl(null); setImgLoaded(false);
@@ -1498,15 +1539,64 @@ function MixSlotCard({ item, index, isVisible, onNavigate, onNext, altCount, alt
             : tier === "likely" ? "rgba(250,204,21,0.7)"
             : "rgba(148,163,184,0.45)";
           const label = tier === "verified" ? "Verified" : tier === "likely" ? "Likely" : "Inferred";
+          const handleVote = (v) => { if (!submitted) setVote(v); };
+          const handleSubmit = () => {
+            if (!vote) return;
+            const entry = { slotType: item.slotType, title: item.title, creator: item.creator, vote, comment, subject: subjectName, timestamp: Date.now() };
+            feedbackLog.push(entry);
+            console.log("Kynda feedback:", JSON.stringify(entry));
+            setSubmitted(true);
+            setComment("");
+            setShowThanks(true);
+            setTimeout(() => setShowThanks(false), 2000);
+          };
           return (
             <div style={{ marginTop: "12px", fontSize: "11px", fontFamily: "'DM Mono', monospace", lineHeight: 1.5 }}>
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <span style={{ color: "rgba(148,163,184,0.4)" }}>Confidence:</span>
                 <span style={{ color }}>● {label}</span>
+                <span style={{ display: "flex", gap: "4px", marginLeft: "6px" }}>
+                  <button onClick={() => handleVote("up")} disabled={submitted} style={{
+                    background: "none", border: "none", cursor: submitted ? "default" : "pointer", padding: "0 2px",
+                    fontSize: "13px", opacity: vote === "up" ? 1 : vote === "down" ? 0.15 : 0.4,
+                    transition: "opacity 0.2s", lineHeight: 1,
+                  }}>👍</button>
+                  <button onClick={() => handleVote("down")} disabled={submitted} style={{
+                    background: "none", border: "none", cursor: submitted ? "default" : "pointer", padding: "0 2px",
+                    fontSize: "13px", opacity: vote === "down" ? 1 : vote === "up" ? 0.15 : 0.4,
+                    transition: "opacity 0.2s", lineHeight: 1,
+                  }}>👎</button>
+                </span>
               </div>
               {item.sources?.length > 0 && (
                 <div style={{ color: "rgba(148,163,184,0.4)", marginTop: "3px" }}>
                   {item.sources.join(" · ")}
+                </div>
+              )}
+              {vote && !submitted && (
+                <div style={{ display: "flex", gap: "6px", marginTop: "8px", alignItems: "center" }}>
+                  <input
+                    type="text" value={comment} onChange={(e) => setComment(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
+                    placeholder={vote === "up" ? "Add a source (optional)" : "What's wrong?"}
+                    style={{
+                      flex: 1, padding: "5px 8px", borderRadius: "3px", fontSize: "11px",
+                      fontFamily: "'DM Mono', monospace", background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.08)", color: "rgba(203,213,225,0.7)",
+                      outline: "none",
+                    }}
+                  />
+                  <button onClick={handleSubmit} style={{
+                    padding: "5px 10px", borderRadius: "3px", fontSize: "10px",
+                    fontFamily: "'DM Mono', monospace", letterSpacing: "0.04em",
+                    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+                    color: "rgba(148,163,184,0.6)", cursor: "pointer", transition: "all 0.2s",
+                  }}>Submit</button>
+                </div>
+              )}
+              {showThanks && (
+                <div style={{ marginTop: "6px", color: "rgba(52,211,153,0.7)", fontSize: "11px", animation: "fadeIn 0.15s ease" }}>
+                  Thanks
                 </div>
               )}
             </div>
@@ -2239,6 +2329,7 @@ export default function KyndaApp() {
                           altIndex={slotAltIndex[item.slotType] || 0}
                           altLoading={!!slotAltLoading[item.slotType]}
                           subjectDomain={subject?.domain}
+                          subjectName={subject?.name}
                         />
                       ))}
 

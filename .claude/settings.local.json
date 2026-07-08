@@ -4,7 +4,26 @@
       "Bash(git push:*)",
       "Bash(git remote set-url:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(vercel:*)",
+      "Bash(npm run build:*)",
+      "Bash(git -C /Users/tonybrancato/Documents/Projects/kynda2 log --oneline -5)",
+      "Read(//Users/tonybrancato/Documents/Projects/kynda3/**)",
+      "Bash(node eval/run.js)",
+      "Bash(gh run *)",
+      "Bash(env)",
+      "Bash(ant auth *)",
+      "Bash(npm install *)",
+      "Bash(node eval/run.js --offline)",
+      "Bash(node -e \"console.log\\(require\\('/Users/tonybrancato/Documents/Projects/kynda3/node_modules/@anthropic-ai/sdk/package.json'\\).version\\)\")",
+      "Bash(npm view *)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node scripts/research.js --subject \"Radiohead\")",
+      "Bash(curl -s -X POST http://localhost:3000/api/mix -H \"Content-Type: application/json\" -d '{\"subject\":{\"name\":\"Radiohead\",\"kind\":\"group\",\"domain\":\"music\",\"mbid\":\"a74b1b7f-71a5-4011-9441-d0b5e4122711\",\"wikidata_qid\":null}}')",
+      "Bash(node -e ' *)",
+      "Bash(node /private/tmp/claude-501/-Users-tonybrancato-Documents-Projects-kynda2/254eb678-ae19-41e5-a617-d96e400ff075/scratchpad/experiment-cost.mjs)",
+      "Bash(caffeinate -i node /private/tmp/claude-501/-Users-tonybrancato-Documents-Projects-kynda2/254eb678-ae19-41e5-a617-d96e400ff075/scratchpad/experiment-b2.mjs)",
+      "Bash(caffeinate -i node /private/tmp/claude-501/-Users-tonybrancato-Documents-Projects-kynda2/254eb678-ae19-41e5-a617-d96e400ff075/scratchpad/experiment-b3.mjs)"
     ]
   }
 }
